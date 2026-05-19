@@ -8,15 +8,24 @@ The default **IAM Identity Center Groups for AWS Control Tower** are rather perm
 
 We have created [Cerberus](https://www.britannica.com/topic/Cerberus) to monitor events from the `sso.amazonaws.com` service. Cerberus, often referred to as the hound of Hades, is a multi-headed dog that guards the gates of the underworld to prevent the dead from leaving, or in this case, prevent `CreateAccountAssignment` of unauthorized (unwanted) default permission sets to AWS Control Tower managed accounts.
 
-# AWS Serverless Application Model (SAM)
+## Deployment
 
-Instruction on how to deploy the application, [Cerberus AWS SAM App](cerberus/README.md).
+Cerberus is a single [AWS SAM](https://docs.aws.amazon.com/serverless-application-model/) stack that must be deployed in the AWS Organization **management account**. IAM Identity Center enforces a service-level restriction that prevents a delegated administrator from removing assignments owned by the management account — see [cerberus/README.md](cerberus/README.md#why-this-runs-in-the-aws-organization-management-account) for the full explanation, pre-deploy security checklist, parameter reference, and migration path from the older delegated-admin topology.
 
-Deployment steps:
+The repository ships a top-level `Makefile` as the single entry point for build, test, and deploy — no remembered SAM CLI command sequences required.
 
-1. Deploy the [Cerberus AWS SAM App](cerberus/template.yaml) in the Management or delegated administrator IAM Identity Center account
-2. Deploy the [EventBrdige Rule](cft-eventbridge-rule.yaml) in the Management account
-   - Reference the Output `EventBusArn` from the **Cerberus AWS SAM App** deployed stack for `CerberusEventBusArn` parameter
+```bash
+make help                                            # List all available targets
+make check                                           # Validate template + run unit tests
+make deploy \
+  MANAGEMENT_ACCOUNT_ID=123456789012 \
+  NOTIFICATION_EMAIL=oncall@example.com \
+  MODE=DRY_RUN                                       # First-time deploy in DRY_RUN
+```
+
+After observing `DRY_RUN: would remove ...` lines in the `/cerberus` log group for real `CreateAccountAssignment` events, re-run with `MODE=ENFORCE` (or omit — `ENFORCE` is the template default).
+
+In CI, set `CI=true` to skip the interactive changeset confirmation that `cerberus/samconfig.toml` enables by default.
 
 ## Contributing
 
@@ -24,8 +33,9 @@ Contributions are welcome! Please follow these steps:
 
 1. Fork the repository.
 2. Create a feature branch.
-3. Commit your changes.
-4. Submit a pull request.
+3. Run `make check` locally — must pass before opening a PR.
+4. Commit your changes.
+5. Submit a pull request.
 
 ## Code Formatting
 
