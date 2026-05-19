@@ -25,6 +25,18 @@ Lambda environment variables (set in `cerberus/template.yaml`):
 
 Tests use stdlib `unittest`, not pytest. Do not add pytest dependencies or use pytest-style fixtures. Test file: `cerberus/tests/unit/test_cerberus.py`.
 
+## State Machine & Lambda Authoring Conventions
+
+When editing `cerberus/statemachine/cerberus.asl.json` or `cerberus/src/cerberus/app.py`, apply these defaults at write time — don't wait for a reviewer to add them.
+
+- **Every Task state needs an explicit `Retry`, applied uniformly.** A defensive pattern on one Task and not its siblings is worse than no pattern — it signals "we thought about this" while leaving peers exposed. AWS SDK integration tasks (`arn:aws:states:::aws-sdk:*`) are subject to throttling and transient network errors; one throttle without retry fails the whole execution.
+  - SDK integration default: 3 attempts on `States.TaskFailed`, 3s interval, 2.0× backoff.
+  - Lambda invoke default: scope `ErrorEquals` to `Lambda.ServiceException`, `Lambda.AWSLambdaException`, `Lambda.SdkClientException`, `Lambda.TooManyRequestsException`. Do **not** retry blanket `States.TaskFailed` for Lambda — the Cerberus Lambda wraps every business-logic exception into a structured `{"result": "FAILED"}` return, so `States.TaskFailed` only fires on crashes (timeout/OOM/runtime), which retrying with identical input cannot fix and will burn ~5×timeout-seconds of wall time before surfacing.
+
+- **Choice-state validations must match what the Lambda actually reads.** When the ASL feeds data to the Lambda, every `Is X Returned?` Choice must check the exact JSONPath the Lambda consumes — not a sibling field. Trace `event.get(...)` calls in `cerberus/src/cerberus/app.py` and align `Variable` paths in the ASL to match. Sibling-field validation can fail-closed on valid input when the sibling is optional (`DisplayName` on Identity Store users is the canonical case: `UserName` is required, `DisplayName` is not).
+
+- **Prefer `StringEquals` over `StringMatches` for exact strings.** `StringMatches` allows wildcards — use it only when you mean it.
+
 ## MCP Servers
 
 Two MCP servers are configured in `.mcp.json` at the repo root. Use them proactively — don't guess at AWS API shapes or dig through logs manually.
