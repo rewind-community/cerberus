@@ -16,6 +16,8 @@ Attempting to delete these assignments from a delegated administrator account re
 
 This is a deliberate architectural compromise. The mitigations below (permission boundary, kill switch, expanded alarms, reduced concurrency) are designed to limit the blast radius of a compromised Cerberus deployment.
 
+The "protected target" account (the one whose assignments the state machine always skips before invoking the Lambda) is derived automatically from `AWS::AccountId` at deploy time — there is no operator-supplied account ID parameter, which eliminates the misconfiguration vector where the wrong account is marked protected and the real management account becomes vulnerable to self-lockout.
+
 ## Pre-deploy security checklist
 
 Before deploying Cerberus to the management account, confirm:
@@ -31,12 +33,6 @@ Before deploying Cerberus to the management account, confirm:
 ## CloudFormation Template Parameters
 
 Defined in `template.yaml`. Parameters without a `Default` are required at deploy time.
-
-### `ManagementAccountId` (required)
-
-12-digit AWS account ID treated as a **protected target**. Assignments where `targetId == ManagementAccountId` are skipped by the state machine before any Lambda invocation. Prevents accidental self-lockout if a regex pattern misfires against the management account's own admin assignments.
-
-Typically the AWS account where this stack is deployed.
 
 ### `Mode` (optional, default `ENFORCE`)
 
@@ -119,7 +115,6 @@ The recommended pattern is to deploy in `DRY_RUN` mode first, observe, then flip
 ```bash
 sam deploy --region <region> \
   --parameter-overrides \
-    ManagementAccountId=<management-account-id> \
     NotificationEmail=<oncall-destination@example.com> \
     Mode=DRY_RUN \
     PrincipalUserNameEmail=<account-factory-admin@example.com>
@@ -138,7 +133,6 @@ To override the regex defaults:
 ```bash
 sam deploy --region <region> \
   --parameter-overrides \
-    ManagementAccountId=<management-account-id> \
     NotificationEmail=<oncall-destination@example.com> \
     PermissionSetNamePattern='^AWS(?:OrganizationsFullAccess|ReadOnlyAccess|...)$' \
     PrincipalGroupNamePattern='^AWS(?:LogArchiveAdmins|ControlTowerAdmins|...)$' \

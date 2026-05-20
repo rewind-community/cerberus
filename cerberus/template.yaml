@@ -4,12 +4,6 @@ Description: >
   Cerberus, a state machine that removes AWS Control Tower default permission set associations.
 
 Parameters:
-  ManagementAccountId:
-    Type: String
-    Description: "AWS account ID treated as a protected target. Assignments targeting this account are skipped to prevent accidental self-lockout if a regex misfires. Typically the management account where this stack is deployed."
-    AllowedPattern: "^[0-9]{12}$"
-    ConstraintDescription: "Must be a valid 12-digit AWS account ID"
-
   LogGroupName:
     Type: String
     Default: "/cerberus"
@@ -127,7 +121,7 @@ Resources:
       DefinitionUri: statemachine/cerberus.asl.json
       DefinitionSubstitutions:
         CerberusFunctionArn: !GetAtt CerberusFunction.Arn
-        ManagementAccountId: !Ref ManagementAccountId
+        ManagementAccountId: !Ref AWS::AccountId
       PermissionsBoundary: !Ref CerberusPermissionsBoundary
       Policies:
         - CloudWatchPutMetricPolicy: {}
@@ -260,18 +254,15 @@ Resources:
   CerberusHighDeletionRateAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: "Cerberus completed >10 successful executions in 5 min — possible regex misfire or compromise"
+      AlarmDescription: "Cerberus performed >10 actual deletions in 5 min — possible regex misfire or compromise"
       ComparisonOperator: GreaterThanThreshold
       EvaluationPeriods: 1
-      MetricName: ExecutionsSucceeded
-      Namespace: AWS/States
+      MetricName: Deleted
+      Namespace: Cerberus
       Period: 300
       Statistic: Sum
       Threshold: 10
       TreatMissingData: notBreaching
-      Dimensions:
-        - Name: StateMachineArn
-          Value: !Ref CerberusStateMachine
       AlarmActions:
         - !Ref CerberusFailureNotificationTopic
 

@@ -18,7 +18,6 @@ The repository ships a top-level `Makefile` as the single entry point for build,
 make help                                            # List all available targets
 make check                                           # Validate template + run unit tests
 make deploy \
-  MANAGEMENT_ACCOUNT_ID=123456789012 \
   NOTIFICATION_EMAIL=oncall@example.com \
   MODE=DRY_RUN                                       # First-time deploy in DRY_RUN
 ```

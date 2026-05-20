@@ -12,9 +12,10 @@ class TestLambdaHandler(unittest.TestCase):
         # behavior, the os.environ.get default).
         os.environ.pop("Mode", None)
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_successful_deletion(self, mock_client, mock_logger):
+    def test_lambda_handler_successful_deletion(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -43,10 +44,15 @@ class TestLambdaHandler(unittest.TestCase):
         self.assertEqual(result["result"], "SUCCESS")
         self.assertIn("SUCCEEDED", result["message"])
         self.assertIn("AccountAssignmentDeletionStatus", result["details"])
+        mock_cloudwatch.put_metric_data.assert_called_once_with(
+            Namespace="Cerberus",
+            MetricData=[{"MetricName": "Deleted", "Value": 1, "Unit": "Count"}],
+        )
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_no_action_taken(self, mock_client, mock_logger):
+    def test_lambda_handler_no_action_taken(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -74,10 +80,15 @@ class TestLambdaHandler(unittest.TestCase):
         result = lambda_handler(event, None)
         self.assertEqual(result["result"], "SUCCESS")
         self.assertIn("No action taken for principal", result["message"])
+        mock_cloudwatch.put_metric_data.assert_called_once_with(
+            Namespace="Cerberus",
+            MetricData=[{"MetricName": "Skipped", "Value": 1, "Unit": "Count"}],
+        )
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_regex_pattern_error(self, mock_client, mock_logger):
+    def test_lambda_handler_regex_pattern_error(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -106,9 +117,10 @@ class TestLambdaHandler(unittest.TestCase):
         self.assertEqual(result["result"], "FAILED")
         self.assertIn("Invalid regex pattern", result["message"])
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_in_progress_status(self, mock_client, mock_logger):
+    def test_lambda_handler_in_progress_status(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -142,9 +154,10 @@ class TestLambdaHandler(unittest.TestCase):
         self.assertIn("AccountAssignmentDeletionStatus", result["details"])
         mock_client.delete_account_assignment.assert_called_once()
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_status_failed(self, mock_client, mock_logger):
+    def test_lambda_handler_status_failed(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -178,9 +191,10 @@ class TestLambdaHandler(unittest.TestCase):
         self.assertIn("Account assignment deletion failed", result["message"])
         self.assertIn("AccountAssignmentDeletionStatus", result["details"])
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_access_denied(self, mock_client, mock_logger):
+    def test_lambda_handler_access_denied(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -222,10 +236,15 @@ class TestLambdaHandler(unittest.TestCase):
         self.assertEqual(result["result"], "FAILED")
         self.assertEqual(result["errorName"], "AccessDeniedException")
         self.assertIn("Access denied", result["message"])
+        mock_cloudwatch.put_metric_data.assert_called_once_with(
+            Namespace="Cerberus",
+            MetricData=[{"MetricName": "Failed", "Value": 1, "Unit": "Count"}],
+        )
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_disabled_mode(self, mock_client, mock_logger):
+    def test_lambda_handler_disabled_mode(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -255,9 +274,10 @@ class TestLambdaHandler(unittest.TestCase):
         self.assertEqual(result["details"], {"mode": "DISABLED"})
         mock_client.delete_account_assignment.assert_not_called()
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_dry_run_mode(self, mock_client, mock_logger):
+    def test_lambda_handler_dry_run_mode(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -287,9 +307,10 @@ class TestLambdaHandler(unittest.TestCase):
         self.assertEqual(result["details"], {"mode": "DRY_RUN"})
         mock_client.delete_account_assignment.assert_not_called()
 
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_group_principal_match(self, mock_client, mock_logger):
+    def test_lambda_handler_group_principal_match(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"

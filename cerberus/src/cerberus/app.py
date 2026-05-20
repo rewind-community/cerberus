@@ -5,6 +5,22 @@ import re
 
 logger = logging.getLogger()
 client = boto3.client("sso-admin")
+cloudwatch = boto3.client("cloudwatch")
+
+
+def _emit_metric(name: str) -> None:
+    """Emit a Cerberus operational metric (Deleted | Skipped | Failed).
+
+    Observability must never block the deletion pipeline, so any failure here
+    is logged and swallowed.
+    """
+    try:
+        cloudwatch.put_metric_data(
+            Namespace="Cerberus",
+            MetricData=[{"MetricName": name, "Value": 1, "Unit": "Count"}],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit Cerberus.%s metric: %s", name, e)
 
 
 def lambda_handler(event, context):
@@ -48,6 +64,7 @@ def lambda_handler(event, context):
         ]
     ):
         logger.error("Missing required parameters in the event: {}".format(event))
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Missing required parameters in the event.",
@@ -56,6 +73,7 @@ def lambda_handler(event, context):
 
     if principalType not in ["USER", "GROUP"]:
         logger.error("Invalid principal type: {}".format(principalType))
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": f"Invalid principal type: {principalType}. Expected 'USER' or 'GROUP'.",
@@ -82,21 +100,34 @@ def lambda_handler(event, context):
                 "Cerberus is in DISABLED mode; ignoring invocation for principal '%s'.",
                 principalName,
             )
+            _emit_metric("Skipped")
             return {
                 "result": "SUCCESS",
                 "message": "DISABLED: invocation ignored.",
                 "details": {"mode": "DISABLED"},
             }
 
-        permissionSetNamePattern = os.environ.get("PermissionSetNamePattern")
+        permissionSetNamePattern = os.environ.get("PermissionSetNamePattern", "")
+        principalGroupNamePattern = os.environ.get("PrincipalGroupNamePattern", "")
+        principalUserNameEmail = (
+            os.environ.get("PrincipalUserNameEmail", "").strip().lower()
+        )
+
+        if not permissionSetNamePattern or not principalGroupNamePattern:
+            logger.error(
+                "Required regex patterns missing from environment "
+                "(PermissionSetNamePattern and PrincipalGroupNamePattern must be set)."
+            )
+            _emit_metric("Failed")
+            return {
+                "result": "FAILED",
+                "message": "Required regex patterns missing from environment.",
+            }
+
         permissionSetNamePatternRegex = re.compile(
             permissionSetNamePattern, re.IGNORECASE
         )
-        principalGroupNamePattern = os.environ.get("PrincipalGroupNamePattern")
         principalGroupNameRegex = re.compile(principalGroupNamePattern, re.IGNORECASE)
-        principalUserNameEmail = (
-            os.environ.get("PrincipalUserNameEmail").strip().lower()
-        )
 
         logger.info(
             "Using regex for principal name: {}".format(principalGroupNameRegex.pattern)
@@ -126,6 +157,7 @@ def lambda_handler(event, context):
                     permissionSetName,
                     targetId,
                 )
+                _emit_metric("Skipped")
                 return {
                     "result": "SUCCESS",
                     "message": "DRY_RUN: deletion skipped.",
@@ -165,12 +197,14 @@ def lambda_handler(event, context):
                 logger.error(
                     "Account assignment deletion failed at API: %s", failure_reason
                 )
+                _emit_metric("Failed")
                 return {
                     "result": "FAILED",
                     "message": "Account assignment deletion failed.",
                     "details": response,
                 }
 
+            _emit_metric("Deleted")
             return {
                 "result": "SUCCESS",
                 "message": "Account assignment deletion request accepted (status={}).".format(
@@ -184,6 +218,7 @@ def lambda_handler(event, context):
                     principalName, principalType
                 )
             )
+            _emit_metric("Skipped")
             return {
                 "result": "SUCCESS",
                 "message": "No action taken for principal: {}".format(principalName),
@@ -191,6 +226,7 @@ def lambda_handler(event, context):
 
     except re.PatternError as e:
         logger.error("Invalid regex pattern: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Invalid regex pattern.",
@@ -200,6 +236,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.ConflictException as e:
         logger.error("ConflictException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Conflict occurred while deleting account assignment.",
@@ -209,6 +246,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.ResourceNotFoundException as e:
         logger.error("ResourceNotFoundException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Resource not found while deleting account assignment.",
@@ -218,6 +256,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.AccessDeniedException as e:
         logger.error("AccessDeniedException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Access denied while deleting account assignment.",
@@ -227,6 +266,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.ValidationException as e:
         logger.error("ValidationException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Validation error occurred while deleting account assignment.",
@@ -236,6 +276,7 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.error("An error occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "An error occurred while processing the request.",

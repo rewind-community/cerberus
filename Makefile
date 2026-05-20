@@ -11,7 +11,6 @@ REQUIREMENTS := $(SAM_DIR)/tests/requirements.txt
 AWS_REGION   ?= ca-central-1
 
 # Required for `make deploy`. No defaults — failing closed is intentional.
-MANAGEMENT_ACCOUNT_ID ?=
 NOTIFICATION_EMAIL    ?=
 
 # Optional parameter overrides for `make deploy`. Unset => template defaults apply.
@@ -47,11 +46,10 @@ check: validate test ## CI gate — validate + test
 build: ## Build deployment artifacts (sam build)
 	cd $(SAM_DIR) && sam build
 
-deploy: _check-deploy-params build ## Deploy stack (requires MANAGEMENT_ACCOUNT_ID, NOTIFICATION_EMAIL)
+deploy: _check-deploy-params build ## Deploy stack (requires NOTIFICATION_EMAIL)
 	cd $(SAM_DIR) && sam deploy \
 		$(if $(CI),--no-confirm-changeset) \
 		--parameter-overrides \
-			ManagementAccountId=$(MANAGEMENT_ACCOUNT_ID) \
 			NotificationEmail=$(NOTIFICATION_EMAIL) \
 			$(if $(MODE),Mode=$(MODE)) \
 			$(if $(PERMISSION_SET_PATTERN),"PermissionSetNamePattern=$(PERMISSION_SET_PATTERN)") \
@@ -64,12 +62,10 @@ clean: ## Remove build artifacts and venv
 	rm -rf $(SAM_DIR)/.aws-sam $(VENV)
 
 _check-deploy-params:
-	@missing=0; \
-	if [ -z "$(MANAGEMENT_ACCOUNT_ID)" ]; then echo "ERROR: MANAGEMENT_ACCOUNT_ID is required (12-digit AWS account ID)"; missing=1; fi; \
-	if [ -z "$(NOTIFICATION_EMAIL)" ]; then echo "ERROR: NOTIFICATION_EMAIL is required"; missing=1; fi; \
-	if [ $$missing -ne 0 ]; then \
+	@if [ -z "$(NOTIFICATION_EMAIL)" ]; then \
+		echo "ERROR: NOTIFICATION_EMAIL is required"; \
 		echo ""; \
-		echo "Usage: make deploy MANAGEMENT_ACCOUNT_ID=123456789012 NOTIFICATION_EMAIL=ops@example.com"; \
+		echo "Usage: make deploy NOTIFICATION_EMAIL=ops@example.com"; \
 		echo "Optional: MODE={ENFORCE|DRY_RUN|DISABLED} PERMISSION_SET_PATTERN='...' PRINCIPAL_GROUP_PATTERN='...' PRINCIPAL_USER_EMAIL='...' LOG_GROUP_NAME='/cerberus' LOG_GROUP_RETENTION=14"; \
 		echo "In CI: set CI=true to skip the interactive changeset confirmation."; \
 		exit 1; \
