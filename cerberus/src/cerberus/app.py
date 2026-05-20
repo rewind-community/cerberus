@@ -218,7 +218,9 @@ def lambda_handler(event, context):
                 _emit_metric("Failed")
                 return {
                     "result": "FAILED",
-                    "message": "Unexpected deletion status from API: {!r}.".format(status),
+                    "message": "Unexpected deletion status from API: {!r}.".format(
+                        status
+                    ),
                     "details": response,
                 }
 

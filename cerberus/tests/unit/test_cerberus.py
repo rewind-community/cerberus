@@ -15,7 +15,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_successful_deletion(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_successful_deletion(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -52,7 +54,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_no_action_taken(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_no_action_taken(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -88,7 +92,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_regex_pattern_error(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_regex_pattern_error(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -120,7 +126,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_in_progress_status(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_in_progress_status(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -157,7 +165,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_status_failed(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_status_failed(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -194,7 +204,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_unknown_status_fails_closed(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_unknown_status_fails_closed(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -232,7 +244,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_missing_status_fails_closed(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_missing_status_fails_closed(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -267,7 +281,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_access_denied(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_access_denied(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -317,7 +333,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_disabled_mode(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_disabled_mode(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -350,7 +368,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_dry_run_mode(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_dry_run_mode(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
@@ -383,7 +403,9 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
-    def test_lambda_handler_group_principal_match(self, mock_client, mock_logger, mock_cloudwatch):
+    def test_lambda_handler_group_principal_match(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
         event = {
             "DescribeInstance": {
                 "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
