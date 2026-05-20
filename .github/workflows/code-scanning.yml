@@ -23,7 +23,7 @@ jobs:
   languages:
     runs-on: ubuntu-latest
     steps:
-      - uses: rewindio/list-repository-languages@main
+      - uses: rewind-community/list-repository-languages@main
         id: list-languages
         with:
           codeql: 'true'
