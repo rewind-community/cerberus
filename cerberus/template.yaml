@@ -105,13 +105,23 @@ Resources:
               - sso:DescribePermissionSetProvisioningStatus
               - identitystore:DescribeUser
               - identitystore:DescribeGroup
-              - lambda:InvokeFunction
               - logs:CreateLogStream
               - logs:PutLogEvents
               - logs:DescribeLogGroups
               - logs:DescribeLogStreams
               - cloudwatch:PutMetricData
             Resource: "*"
+          # Boundary ceiling on lambda:InvokeFunction is scoped to Lambda functions
+          # in this stack. The actual grant comes from the SAM Serverless::Connector
+          # above, which produces a tightly-scoped policy on CerberusFunction.Arn.
+          # We can't !GetAtt the function ARN here (circular: function uses this boundary),
+          # so we constrain via the StackName-prefixed naming pattern that SAM generates
+          # by default: <StackName>-<LogicalID>-<RandomSuffix>.
+          - Sid: AllowInvokeStackLambdas
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource:
+              - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*"
 
   CerberusStateMachine:
     Type: AWS::Serverless::StateMachine

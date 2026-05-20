@@ -79,7 +79,7 @@ Cerberus publishes four CloudWatch Alarms, all wired to the same SNS topic:
 | `CerberusExecutionFailureAlarm` | `AWS/States ExecutionsFailed` | > 0 in 1 min | A state machine execution failed. Real deletion failure or upstream issue. |
 | `CerberusFunctionErrorsAlarm` | `AWS/Lambda Errors` | > 0 in 1 min | Lambda raised an unhandled error. Code-level issue. |
 | `CerberusFunctionThrottlesAlarm` | `AWS/Lambda Throttles` | > 0 in 1 min | Reserved-concurrency cap hit. Investigate event burst. |
-| `CerberusHighDeletionRateAlarm` | `AWS/States ExecutionsSucceeded` | > 10 in 5 min | Cerberus is deleting at unusual volume. Possible regex misfire or compromise. |
+| `CerberusHighDeletionRateAlarm` | `Cerberus Deleted` (custom) | > 10 in 5 min | Cerberus performed an unusual volume of actual deletions. Possible regex misfire or compromise. The metric counts only real `DeleteAccountAssignment` calls — no-action, dry-run, and skipped-mgmt-account paths emit `Skipped` instead, so this alarm has no false positives from non-deletion executions. |
 
 Subscribe `NotificationEmail` to a real on-call destination — a noisy alarm to a personal inbox is worse than no alarm.
 

@@ -51,7 +51,7 @@
           "And": [
             {
               "Variable": "$.EventName",
-              "StringMatches": "CreateAccountAssignment"
+              "StringEquals": "CreateAccountAssignment"
             },
             {
               "Variable": "$.RequestParameters.permissionSetArn",
@@ -134,13 +134,13 @@
       "Choices": [
         {
           "Variable": "$.RequestParameters.principalType",
-          "StringMatches": "USER",
+          "StringEquals": "USER",
           "Next": "DescribeUser"
         },
         {
           "Next": "DescribeGroup",
           "Variable": "$.RequestParameters.principalType",
-          "StringMatches": "GROUP"
+          "StringEquals": "GROUP"
         }
       ],
       "Default": "Fail Unsupported Principal Type"

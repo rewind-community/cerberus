@@ -204,6 +204,24 @@ def lambda_handler(event, context):
                     "details": response,
                 }
 
+            # AWS documents three valid statuses for DeleteAccountAssignment:
+            # IN_PROGRESS, SUCCEEDED, FAILED. Anything else (None, an unrecognized
+            # string, a missing AccountAssignmentDeletionStatus) means the API
+            # contract changed underneath us or the response is malformed — fail
+            # closed rather than emit Deleted on a state we can't reason about.
+            if status not in {"IN_PROGRESS", "SUCCEEDED"}:
+                logger.error(
+                    "Unexpected deletion status from API: %r (full response: %s)",
+                    status,
+                    response,
+                )
+                _emit_metric("Failed")
+                return {
+                    "result": "FAILED",
+                    "message": "Unexpected deletion status from API: {!r}.".format(status),
+                    "details": response,
+                }
+
             _emit_metric("Deleted")
             return {
                 "result": "SUCCESS",

@@ -194,6 +194,79 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
+    def test_lambda_handler_unknown_status_fails_closed(self, mock_client, mock_logger, mock_cloudwatch):
+        event = {
+            "DescribeInstance": {
+                "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
+            },
+            "RequestParameters": {
+                "targetId": "target-id",
+                "targetType": "AWS_ACCOUNT",
+                "principalType": "USER",
+                "principalId": "user-id",
+            },
+            "DescribePermissionSet": {
+                "PermissionSet": {
+                    "PermissionSetArn": "arn:aws:sso:::permissionSet/sso-instance-id/permission-set-id",
+                    "Name": "MatchingPermissionSetName",
+                }
+            },
+            "DescribeUser": {"UserName": "matchinguser@example.com"},
+        }
+        os.environ["PermissionSetNamePattern"] = "^MatchingPermissionSetName$"
+        os.environ["PrincipalGroupNamePattern"] = "^MatchingGroupName$"
+        os.environ["PrincipalUserNameEmail"] = "matchinguser@example.com"
+        # AWS returns a status outside the documented {IN_PROGRESS, SUCCEEDED, FAILED} set —
+        # could mean API contract drift or a malformed response. Must fail closed, not emit Deleted.
+        mock_client.delete_account_assignment.return_value = {
+            "AccountAssignmentDeletionStatus": {"Status": "UNKNOWN_NEW_STATUS"}
+        }
+        result = lambda_handler(event, None)
+        self.assertEqual(result["result"], "FAILED")
+        self.assertIn("Unexpected deletion status", result["message"])
+        mock_cloudwatch.put_metric_data.assert_called_once_with(
+            Namespace="Cerberus",
+            MetricData=[{"MetricName": "Failed", "Value": 1, "Unit": "Count"}],
+        )
+
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
+    @patch("cerberus.src.cerberus.app.logger")
+    @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
+    def test_lambda_handler_missing_status_fails_closed(self, mock_client, mock_logger, mock_cloudwatch):
+        event = {
+            "DescribeInstance": {
+                "InstanceArn": "arn:aws:sso:::instance/sso-instance-id"
+            },
+            "RequestParameters": {
+                "targetId": "target-id",
+                "targetType": "AWS_ACCOUNT",
+                "principalType": "USER",
+                "principalId": "user-id",
+            },
+            "DescribePermissionSet": {
+                "PermissionSet": {
+                    "PermissionSetArn": "arn:aws:sso:::permissionSet/sso-instance-id/permission-set-id",
+                    "Name": "MatchingPermissionSetName",
+                }
+            },
+            "DescribeUser": {"UserName": "matchinguser@example.com"},
+        }
+        os.environ["PermissionSetNamePattern"] = "^MatchingPermissionSetName$"
+        os.environ["PrincipalGroupNamePattern"] = "^MatchingGroupName$"
+        os.environ["PrincipalUserNameEmail"] = "matchinguser@example.com"
+        # No AccountAssignmentDeletionStatus at all — Status resolves to None.
+        mock_client.delete_account_assignment.return_value = {}
+        result = lambda_handler(event, None)
+        self.assertEqual(result["result"], "FAILED")
+        self.assertIn("Unexpected deletion status", result["message"])
+        mock_cloudwatch.put_metric_data.assert_called_once_with(
+            Namespace="Cerberus",
+            MetricData=[{"MetricName": "Failed", "Value": 1, "Unit": "Count"}],
+        )
+
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
+    @patch("cerberus.src.cerberus.app.logger")
+    @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
     def test_lambda_handler_access_denied(self, mock_client, mock_logger, mock_cloudwatch):
         event = {
             "DescribeInstance": {
