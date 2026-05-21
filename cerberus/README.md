@@ -23,7 +23,7 @@ The "protected target" account (the one whose assignments the state machine alwa
 Before deploying Cerberus to the management account, confirm:
 
 - [ ] **CloudTrail** is enabled at the organization level and ingests `sso.amazonaws.com` events.
-- [ ] **CloudTrail data events** are enabled on the Cerberus Lambda function ARN — this captures invocation and code-change activity. Configure post-deploy.
+- [ ] **CloudTrail data events** are enabled on the Cerberus Lambda function ARN — this captures every `Invoke` call against the function, giving an audit trail of who/what triggered each deletion attempt. Configure post-deploy. (Code-change activity — `UpdateFunctionCode`, `UpdateFunctionConfiguration`, etc. — is captured by default CloudTrail management events on `lambda.amazonaws.com`; no extra config needed.)
 - [ ] **GuardDuty Lambda Protection** is enabled (verify org-level coverage).
 - [ ] **Branch protection on `main`** in the source repository: required reviewers, required status checks, signed commits required, no force-push, no admin bypass.
 - [ ] **CODEOWNERS** routes Cerberus changes through your security and platform teams.

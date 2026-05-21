@@ -41,6 +41,26 @@ def lambda_handler(event, context):
     logger.debug("Lambda function invoked with event: %s", event)
     logger.debug("Lambda function context: %s", context)
 
+    # Mode is parsed and DISABLED is enforced before any event field access, so the
+    # kill switch works even on stripped-down or malformed payloads (defense-in-depth
+    # against direct invocation; EventBridge is the primary gate). Unknown values
+    # fail closed — anything other than ENFORCE or DRY_RUN is treated as DISABLED.
+    mode = os.environ.get("Mode", "ENFORCE").strip().upper()
+    if mode not in {"ENFORCE", "DRY_RUN", "DISABLED"}:
+        logger.warning(
+            "Unknown Mode value %r — failing closed (treating as DISABLED).", mode
+        )
+        mode = "DISABLED"
+
+    if mode == "DISABLED":
+        logger.info("Cerberus is in DISABLED mode; ignoring invocation.")
+        _emit_metric("Skipped")
+        return {
+            "result": "SUCCESS",
+            "message": "DISABLED: invocation ignored.",
+            "details": {"mode": "DISABLED"},
+        }
+
     instanceArn = event.get("DescribeInstance").get("InstanceArn")
     targetId = event.get("RequestParameters").get("targetId")
     targetType = event.get("RequestParameters").get("targetType", "AWS_ACCOUNT")
@@ -89,24 +109,6 @@ def lambda_handler(event, context):
     )
 
     try:
-
-        # Operational mode: ENFORCE | DRY_RUN | DISABLED. DISABLED is normally enforced at the
-        # EventBridge rule level (the rule's State is DISABLED and no events reach this handler),
-        # but we honour it here too as defense-in-depth against direct invocation.
-        mode = os.environ.get("Mode", "ENFORCE").strip().upper()
-
-        if mode == "DISABLED":
-            logger.info(
-                "Cerberus is in DISABLED mode; ignoring invocation for principal '%s'.",
-                principalName,
-            )
-            _emit_metric("Skipped")
-            return {
-                "result": "SUCCESS",
-                "message": "DISABLED: invocation ignored.",
-                "details": {"mode": "DISABLED"},
-            }
-
         permissionSetNamePattern = os.environ.get("PermissionSetNamePattern", "")
         principalGroupNamePattern = os.environ.get("PrincipalGroupNamePattern", "")
         principalUserNameEmail = (

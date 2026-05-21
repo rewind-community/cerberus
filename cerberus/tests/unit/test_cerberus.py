@@ -368,6 +368,40 @@ class TestLambdaHandler(unittest.TestCase):
     @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
     @patch("cerberus.src.cerberus.app.logger")
     @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
+    def test_lambda_handler_disabled_mode_short_circuits_before_event_parsing(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
+        # Defense-in-depth: DISABLED must be honoured on any payload, including
+        # stripped-down direct invocations used to test the kill switch. The check
+        # runs before any event field destructuring, so an empty event is fine.
+        os.environ["Mode"] = "DISABLED"
+
+        result = lambda_handler({}, None)
+        self.assertEqual(result["result"], "SUCCESS")
+        self.assertIn("DISABLED", result["message"])
+        self.assertEqual(result["details"], {"mode": "DISABLED"})
+        mock_client.delete_account_assignment.assert_not_called()
+
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
+    @patch("cerberus.src.cerberus.app.logger")
+    @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
+    def test_lambda_handler_unknown_mode_fails_closed(
+        self, mock_client, mock_logger, mock_cloudwatch
+    ):
+        # CloudFormation AllowedValues blocks typos at deploy time, but a direct
+        # env-var override (or tooling bug) could land an unknown value. Must be
+        # treated as DISABLED, not silently fall through to ENFORCE.
+        os.environ["Mode"] = "ENORCE"
+
+        result = lambda_handler({}, None)
+        self.assertEqual(result["result"], "SUCCESS")
+        self.assertIn("DISABLED", result["message"])
+        self.assertEqual(result["details"], {"mode": "DISABLED"})
+        mock_client.delete_account_assignment.assert_not_called()
+
+    @patch("cerberus.src.cerberus.app.cloudwatch", new_callable=MagicMock)
+    @patch("cerberus.src.cerberus.app.logger")
+    @patch("cerberus.src.cerberus.app.client", new_callable=MagicMock)
     def test_lambda_handler_dry_run_mode(
         self, mock_client, mock_logger, mock_cloudwatch
     ):
