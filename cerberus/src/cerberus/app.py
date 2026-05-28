@@ -5,6 +5,22 @@ import re
 
 logger = logging.getLogger()
 client = boto3.client("sso-admin")
+cloudwatch = boto3.client("cloudwatch")
+
+
+def _emit_metric(name: str) -> None:
+    """Emit a Cerberus operational metric (Deleted | Skipped | Failed).
+
+    Observability must never block the deletion pipeline, so any failure here
+    is logged and swallowed.
+    """
+    try:
+        cloudwatch.put_metric_data(
+            Namespace="Cerberus",
+            MetricData=[{"MetricName": name, "Value": 1, "Unit": "Count"}],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit Cerberus.%s metric: %s", name, e)
 
 
 def lambda_handler(event, context):
@@ -24,6 +40,26 @@ def lambda_handler(event, context):
     """
     logger.debug("Lambda function invoked with event: %s", event)
     logger.debug("Lambda function context: %s", context)
+
+    # Mode is parsed and DISABLED is enforced before any event field access, so the
+    # kill switch works even on stripped-down or malformed payloads (defense-in-depth
+    # against direct invocation; EventBridge is the primary gate). Unknown values
+    # fail closed — anything other than ENFORCE or DRY_RUN is treated as DISABLED.
+    mode = os.environ.get("Mode", "ENFORCE").strip().upper()
+    if mode not in {"ENFORCE", "DRY_RUN", "DISABLED"}:
+        logger.warning(
+            "Unknown Mode value %r — failing closed (treating as DISABLED).", mode
+        )
+        mode = "DISABLED"
+
+    if mode == "DISABLED":
+        logger.info("Cerberus is in DISABLED mode; ignoring invocation.")
+        _emit_metric("Skipped")
+        return {
+            "result": "SUCCESS",
+            "message": "DISABLED: invocation ignored.",
+            "details": {"mode": "DISABLED"},
+        }
 
     instanceArn = event.get("DescribeInstance").get("InstanceArn")
     targetId = event.get("RequestParameters").get("targetId")
@@ -48,6 +84,7 @@ def lambda_handler(event, context):
         ]
     ):
         logger.error("Missing required parameters in the event: {}".format(event))
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Missing required parameters in the event.",
@@ -56,6 +93,7 @@ def lambda_handler(event, context):
 
     if principalType not in ["USER", "GROUP"]:
         logger.error("Invalid principal type: {}".format(principalType))
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": f"Invalid principal type: {principalType}. Expected 'USER' or 'GROUP'.",
@@ -71,16 +109,27 @@ def lambda_handler(event, context):
     )
 
     try:
+        permissionSetNamePattern = os.environ.get("PermissionSetNamePattern", "")
+        principalGroupNamePattern = os.environ.get("PrincipalGroupNamePattern", "")
+        principalUserNameEmail = (
+            os.environ.get("PrincipalUserNameEmail", "").strip().lower()
+        )
 
-        permissionSetNamePattern = os.environ.get("PermissionSetNamePattern")
+        if not permissionSetNamePattern or not principalGroupNamePattern:
+            logger.error(
+                "Required regex patterns missing from environment "
+                "(PermissionSetNamePattern and PrincipalGroupNamePattern must be set)."
+            )
+            _emit_metric("Failed")
+            return {
+                "result": "FAILED",
+                "message": "Required regex patterns missing from environment.",
+            }
+
         permissionSetNamePatternRegex = re.compile(
             permissionSetNamePattern, re.IGNORECASE
         )
-        principalGroupNamePattern = os.environ.get("PrincipalGroupNamePattern")
         principalGroupNameRegex = re.compile(principalGroupNamePattern, re.IGNORECASE)
-        principalUserNameEmail = (
-            os.environ.get("PrincipalUserNameEmail").strip().lower()
-        )
 
         logger.info(
             "Using regex for principal name: {}".format(principalGroupNameRegex.pattern)
@@ -102,6 +151,21 @@ def lambda_handler(event, context):
             re.match(principalGroupNameRegex, principalName)
             or principalUserNameEmail == principalName
         ):
+            if mode == "DRY_RUN":
+                logger.info(
+                    "DRY_RUN: would remove Control Tower provisioned '%s' access for principal '%s' on permission set '%s' targeting account '%s'.",
+                    principalType,
+                    principalName,
+                    permissionSetName,
+                    targetId,
+                )
+                _emit_metric("Skipped")
+                return {
+                    "result": "SUCCESS",
+                    "message": "DRY_RUN: deletion skipped.",
+                    "details": {"mode": "DRY_RUN"},
+                }
+
             logger.info(
                 "Removing Control Tower provisioned '{}' access for principal '{}'.".format(
                     principalType, principalName
@@ -135,12 +199,34 @@ def lambda_handler(event, context):
                 logger.error(
                     "Account assignment deletion failed at API: %s", failure_reason
                 )
+                _emit_metric("Failed")
                 return {
                     "result": "FAILED",
                     "message": "Account assignment deletion failed.",
                     "details": response,
                 }
 
+            # AWS documents three valid statuses for DeleteAccountAssignment:
+            # IN_PROGRESS, SUCCEEDED, FAILED. Anything else (None, an unrecognized
+            # string, a missing AccountAssignmentDeletionStatus) means the API
+            # contract changed underneath us or the response is malformed — fail
+            # closed rather than emit Deleted on a state we can't reason about.
+            if status not in {"IN_PROGRESS", "SUCCEEDED"}:
+                logger.error(
+                    "Unexpected deletion status from API: %r (full response: %s)",
+                    status,
+                    response,
+                )
+                _emit_metric("Failed")
+                return {
+                    "result": "FAILED",
+                    "message": "Unexpected deletion status from API: {!r}.".format(
+                        status
+                    ),
+                    "details": response,
+                }
+
+            _emit_metric("Deleted")
             return {
                 "result": "SUCCESS",
                 "message": "Account assignment deletion request accepted (status={}).".format(
@@ -154,6 +240,7 @@ def lambda_handler(event, context):
                     principalName, principalType
                 )
             )
+            _emit_metric("Skipped")
             return {
                 "result": "SUCCESS",
                 "message": "No action taken for principal: {}".format(principalName),
@@ -161,6 +248,7 @@ def lambda_handler(event, context):
 
     except re.PatternError as e:
         logger.error("Invalid regex pattern: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Invalid regex pattern.",
@@ -170,6 +258,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.ConflictException as e:
         logger.error("ConflictException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Conflict occurred while deleting account assignment.",
@@ -179,6 +268,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.ResourceNotFoundException as e:
         logger.error("ResourceNotFoundException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Resource not found while deleting account assignment.",
@@ -188,6 +278,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.AccessDeniedException as e:
         logger.error("AccessDeniedException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Access denied while deleting account assignment.",
@@ -197,6 +288,7 @@ def lambda_handler(event, context):
 
     except client.exceptions.ValidationException as e:
         logger.error("ValidationException occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "Validation error occurred while deleting account assignment.",
@@ -206,6 +298,7 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.error("An error occurred: %s", e)
+        _emit_metric("Failed")
         return {
             "result": "FAILED",
             "message": "An error occurred while processing the request.",

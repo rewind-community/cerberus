@@ -1,140 +1,189 @@
 # Cerberus
 
-Cerberus is a [AWS Serverless Application Model](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-getting-started.html) serverless application for managing AWS resources with the SAM CLI.
-
-AWS SAM Amazon States Language (ASL) diagram of the Cerberus state machine.
+Cerberus is an [AWS Serverless Application Model](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-getting-started.html) (SAM) application that automatically removes unwanted AWS Control Tower default IAM Identity Center permission set assignments. It listens for `sso:CreateAccountAssignment` events on CloudTrail and, when an assignment matches the configured regex patterns, calls `sso-admin:DeleteAccountAssignment` to remove it.
 
 ![Cerberus SAM ASL](../static/stepfunctions_graph.png)
 
+## Why this runs in the AWS Organization management account
+
+Cerberus must be deployed in the AWS Organization **management account**, not in a delegated administrator account.
+
+[AWS IAM Identity Center](https://docs.aws.amazon.com/singlesignon/latest/userguide/delegated-admin.html) supports delegating administration to a member account, and that's the recommended pattern for most identity-management workloads. However, IAM Identity Center enforces a service-level restriction that is invisible to IAM policies, SCPs, and the delegation configuration:
+
+> Permission sets whose lifecycle is owned by the management account — including all the AWS-managed permission sets that AWS Control Tower provisions (`AWSAdministratorAccess`, `AWSReadOnlyAccess`, `AWSOrganizationsFullAccess`, etc.) — can only have their assignments removed by a principal in the management account itself.
+
+Attempting to delete these assignments from a delegated administrator account returns `AccessDeniedException` regardless of IAM permissions. Since Cerberus's purpose is precisely to clean up these AWS-Control-Tower-managed default assignments, it must run in the management account.
+
+This is a deliberate architectural compromise. The mitigations below (permission boundary, kill switch, expanded alarms, reduced concurrency) are designed to limit the blast radius of a compromised Cerberus deployment.
+
+The "protected target" account (the one whose assignments the state machine always skips before invoking the Lambda) is derived automatically from `AWS::AccountId` at deploy time — there is no operator-supplied account ID parameter, which eliminates the misconfiguration vector where the wrong account is marked protected and the real management account becomes vulnerable to self-lockout.
+
+## Pre-deploy security checklist
+
+Before deploying Cerberus to the management account, confirm:
+
+- [ ] **CloudTrail** is enabled at the organization level and ingests `sso.amazonaws.com` events.
+- [ ] **CloudTrail data events** are enabled on the Cerberus Lambda function ARN — this captures every `Invoke` call against the function, giving an audit trail of who/what triggered each deletion attempt. Configure post-deploy. (Code-change activity — `UpdateFunctionCode`, `UpdateFunctionConfiguration`, etc. — is captured by default CloudTrail management events on `lambda.amazonaws.com`; no extra config needed.)
+- [ ] **GuardDuty Lambda Protection** is enabled (verify org-level coverage).
+- [ ] **Branch protection on `main`** in the source repository: required reviewers, required status checks, signed commits required, no force-push, no admin bypass.
+- [ ] **CODEOWNERS** routes Cerberus changes through your security and platform teams.
+- [ ] **Deploying principal** is a dedicated `CerberusDeployer` role in the management account, not `AdministratorAccess`. The role itself should have a permission boundary.
+- [ ] **NotificationEmail** is wired to a real on-call destination (PagerDuty, monitored shared inbox), not a personal email.
+
 ## CloudFormation Template Parameters
 
-The following parameters are defined in the `template.yaml` file and can be customized during deployment:
+Defined in `template.yaml`. Parameters without a `Default` are required at deploy time.
 
-### EventBusName
+### `Mode` (optional, default `ENFORCE`)
 
-- **Type**: String
-- **Default**: `cerberus-event-bus`
-- **Description**: The name of the custom EventBridge event bus for Cerberus.
+Operational mode of the deletion pipeline:
 
-### ManagementAccountId
+| Value | Behavior |
+|---|---|
+| `ENFORCE` | Default. Cerberus deletes matching assignments. |
+| `DRY_RUN` | Lambda evaluates the regex and logs what *would* be deleted, but does not call the SSO API. Use for the first 24 hours after deploying or after changing a regex pattern. |
+| `DISABLED` | EventBridge rule's `State` is set to `DISABLED`. No events reach the state machine. Operational kill switch. |
 
-- **Type**: String
-- **Description**: The Management AWS account ID that will send events to the Cerberus event bus.
-- **Allowed Pattern**: `^[0-9]{12}$`
-- **Constraint Description**: Must be a valid 12-digit AWS account ID.
+Flip via `sam deploy --parameter-overrides Mode=DRY_RUN` (or `=DISABLED`, `=ENFORCE`) without changing code.
 
-### LogGroupName
+### `PermissionSetNamePattern` (optional)
 
-- **Type**: String
-- **Default**: `/cerberus`
-- **Description**: The name of the CloudWatch Log Group for the Cerberus State Machine.
-- **Allowed Pattern**: `^[.\\-_/#A-Za-z0-9]{1,512}\\Z`
-- **Min Length**: 1
-- **Max Length**: 512
-- **Constraint Description**: Log group name must be 1-512 characters long and can include letters, numbers, and the following characters: `.-_/#`.
+Regex matched (case-insensitive) against the permission set name. Default matches the AWS Control Tower default permission sets (`AWSOrganizationsFullAccess`, `AWSReadOnlyAccess`, `AWSServiceCatalogEndUserAccess`, `AWSServiceCatalogAdminFullAccess`, `AWSPowerUserAccess`, `AWSAdministratorAccess`).
 
-### LogGroupRetentionDays
+### `PrincipalGroupNamePattern` (optional)
 
-- **Type**: Number
-- **Default**: 14
-- **Description**: The retention period in days for the CloudWatch Log Group.
-- **Allowed Values**: 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653.
+Regex matched (case-insensitive) against the principal name when `principalType=GROUP`. Default matches the AWS Control Tower default groups.
 
-### PermissionSetNamePattern
+### `PrincipalUserNameEmail` (optional, default empty)
 
-- **Type**: String
-- **Default**: `^AWS(?:OrganizationsFullAccess|ReadOnlyAccess|ServiceCatalogEndUserAccess|ServiceCatalogAdminFullAccess|PowerUserAccess|AdministratorAccess)$`
-- **Description**: Regex pattern for matching AWS Control Tower default permission set names, such as `OrganizationsFullAccess` and `AdministratorAccess`.
+Exact email address (lowercase) matched against the principal name when `principalType=USER`. Used to clean up the default Account Factory admin user assignment created during account provisioning. Leave empty to disable user-email matching.
 
-### PrincipalGroupNamePattern
+### `NotificationEmail` (required)
 
-- **Type**: String
-- **Default**: `^AWS(?:LogArchiveViewers|LogArchiveAdmins|ControlTowerAdmins|AccountFactory|AuditAccountAdmins|SecurityAuditors|ServiceCatalogAdmins|SecurityAuditPowerUsers)$`
-- **Description**: Regex pattern for matching AWS Control Tower default group principal names, such as `LogArchiveAdmins` and `ControlTowerAdmins`.
+Email address subscribed to the SNS topic that receives all alarm notifications.
 
-### PrincipalUserNameEmail
+### `LogGroupName` (optional, default `/cerberus`)
 
-- **Type**: String
-- **Default**: (empty)
-- **Description**: Valid email addresses used by AWS Control Tower account factory enrollment. Leave empty to disable validation.
-- **Allowed Pattern**: `^$|^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$`
-- **Constraint Description**: Must be a valid email address or left empty.
+Name of the CloudWatch Log Group for the Cerberus state machine and Lambda.
 
-### NotificationEmail
+### `LogGroupRetentionDays` (optional, default 14)
 
-- **Type**: String
-- **Description**: Email address to receive notifications when the Cerberus state machine execution fails.
-- **Allowed Pattern**: `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$`
-- **Constraint Description**: Must be a valid email address.
+CloudWatch Log retention period.
 
-## Monitoring and Alerts
+## Monitoring and alerts
 
-Cerberus includes built-in monitoring capabilities:
+Cerberus publishes four CloudWatch Alarms, all wired to the same SNS topic:
 
-- **CloudWatch Alarm**: Automatically monitors the state machine for execution failures
-- **SNS Notifications**: Sends email notifications to the specified address when failures occur
-- **Failure Detection**: Triggers alerts when any state machine execution fails
+| Alarm | Source metric | Threshold | What it means |
+|---|---|---|---|
+| `CerberusExecutionFailureAlarm` | `AWS/States ExecutionsFailed` | > 0 in 1 min | A state machine execution failed. Real deletion failure or upstream issue. |
+| `CerberusFunctionErrorsAlarm` | `AWS/Lambda Errors` | > 0 in 1 min | Lambda raised an unhandled error. Code-level issue. |
+| `CerberusFunctionThrottlesAlarm` | `AWS/Lambda Throttles` | > 0 in 1 min | Reserved-concurrency cap hit. Investigate event burst. |
+| `CerberusHighDeletionRateAlarm` | `Cerberus Deleted` (custom) | > 10 in 5 min | Cerberus performed an unusual volume of actual deletions. Possible regex misfire or compromise. The metric counts only real `DeleteAccountAssignment` calls — no-action, dry-run, and skipped-mgmt-account paths emit `Skipped` instead, so this alarm has no false positives from non-deletion executions. |
 
-The monitoring system helps ensure quick response to any issues with the Cerberus state machine execution.
+Subscribe `NotificationEmail` to a real on-call destination — a noisy alarm to a personal inbox is worse than no alarm.
+
+## Permission boundary
+
+The template ships an inline `AWS::IAM::ManagedPolicy` (`CerberusPermissionsBoundary`) attached to both the Lambda execution role and the state machine role. It allows only the specific actions required for IAM Identity Center cleanup:
+
+- `sso:DeleteAccountAssignment`
+- `sso:DescribePermissionSet`, `sso:DescribeInstance`, `sso:ListPermissionSets`, `sso:GetPermissionSet`, `sso:DescribePermissionSetProvisioningStatus`
+- `identitystore:DescribeUser`, `identitystore:DescribeGroup`
+- `lambda:InvokeFunction`
+- `logs:CreateLogStream`, `logs:PutLogEvents`, `logs:DescribeLogGroups`, `logs:DescribeLogStreams`
+- `cloudwatch:PutMetricData`
+
+Anything else (`iam:*`, `organizations:*`, `sts:AssumeRole`, `sso:CreateAccountAssignment`, `kms:*`, etc.) is implicitly denied at the boundary regardless of inline policy grants.
+
+Service Control Policies do **not** apply to management-account principals. The permission boundary is the only IAM-layer guardrail and is intentionally tight.
 
 ## Build and Deploy
 
 ### Build
 
-Use the following command to build the application:
-
 ```bash
-sam build --use-container
+sam build
 ```
 
-### Deploy
+Container builds are configured by default in `samconfig.toml`. The build runs inside `public.ecr.aws/sam/build-python3.13` so the artifact matches the Lambda runtime exactly.
 
-⚠️ IMPORTANT PARAMETERS ⚠️
+### Deploy (first time)
 
-#### `ManagementAccountId` and `EventBusName`
-
-[AWS IAM Identity Center Documentation, Delegated administration](https://docs.aws.amazon.com/singlesignon/latest/userguide/delegated-admin.html). IAM Identity Center instance must always reside in the management account, they can be configured to delegate administration of IAM Identity Center to a member account in AWS Organizations, thereby extending the ability to manage IAM Identity Center from outside the management account.
-
-This parmeter enables support for environments following the best-practice of delegating the access via another AWS account. These parameters enable the integration with the [cft-eventbridge-rule.yaml](../cft-eventbridge-rule.yaml) template to deploy the Event Bridge Rule in the Management account.
-
-#### `PrincipalUserNameEmail`
-
-[AWS Control Tower Documentation, Provision accounts with AWS Service Catalog Account Factory](https://docs.aws.amazon.com/controltower/latest/userguide/provision-as-end-user.html). When creating or updating an Account Factory enrolled account, the `SSOUserEmail` prompt can be a new email address, or the email address associated with an existing IAM Identity Center user. Whichever choen, this user will have administrative access to the account you're provisioning.
-
-This parameter enables removal of the default User assignment that will have administrative access. The pattern requires that a common email address be used when performing changes to accounts via AWS Control Tower Account Factory. Example `aws-control-tower@company.xyz`.
-
-Deploy the application with the following command:
+The recommended pattern is to deploy in `DRY_RUN` mode first, observe, then flip to `ENFORCE`.
 
 ```bash
-sam deploy --region us-east-1 --parameter-overrides ManagementAccountId=012345678901 LogGroupName=/cerberus NotificationEmail=your-email@company.com
+sam deploy --region <region> \
+  --parameter-overrides \
+    NotificationEmail=<oncall-destination@example.com> \
+    Mode=DRY_RUN \
+    PrincipalUserNameEmail=<account-factory-admin@example.com>
 ```
 
-To include RegEx patterns for permissions and principals, use:
+Watch the `/cerberus` log group for `DRY_RUN: would remove ...` lines on the next `CreateAccountAssignment` event. Confirm the matches are correct.
+
+Then flip to `ENFORCE`:
 
 ```bash
-sam deploy --region us-east-1 --parameter-overrides ManagementAccountId=012345678901 LogGroupName=/cerberus PermissionSetNamePattern='^AWS(?:OrganizationsFullAccess|ReadOnlyAccess|ServiceCatalogEndUserAccess|ServiceCatalogAdminFullAccess|PowerUserAccess|AdministratorAccess)$' PrincipalNamePattern='^AWS(?:LogArchiveViewers|LogArchiveAdmins|ControlTowerAdmins|AccountFactory|AuditAccountAdmins|SecurityAuditors|ServiceCatalogAdmins|SecurityAuditPowerUsers)$' PrincipalUserNameEmail='devops+control-tower-account-factory@company.xyz' NotificationEmail=your-email@company.com
+sam deploy --parameter-overrides Mode=ENFORCE [...other params...]
 ```
+
+To override the regex defaults:
+
+```bash
+sam deploy --region <region> \
+  --parameter-overrides \
+    NotificationEmail=<oncall-destination@example.com> \
+    PermissionSetNamePattern='^AWS(?:OrganizationsFullAccess|ReadOnlyAccess|...)$' \
+    PrincipalGroupNamePattern='^AWS(?:LogArchiveAdmins|ControlTowerAdmins|...)$' \
+    PrincipalUserNameEmail='<account-factory-admin@example.com>'
+```
+
+### Operational kill switch
+
+```bash
+# Stop processing events without deleting the stack
+sam deploy --parameter-overrides Mode=DISABLED [...other params...]
+
+# Resume
+sam deploy --parameter-overrides Mode=ENFORCE [...other params...]
+```
+
+`DISABLED` sets the EventBridge rule's `State` to `DISABLED`. No events reach the state machine.
+
+## Migration from the delegated-admin model
+
+Earlier versions of Cerberus deployed the state machine and Lambda in a delegated administrator account, with a separate `cft-eventbridge-rule.yaml` template forwarding events from the management account. That topology is no longer supported — see [Why this runs in the management account](#why-this-runs-in-the-aws-organization-management-account).
+
+Migration sequence:
+
+1. Deploy this stack to the management account in `Mode=DRY_RUN`.
+2. Validate the new stack against a test `CreateAccountAssignment`. Confirm the Lambda logs `DRY_RUN: would remove ...` and no actual deletion occurs.
+3. Delete the old delegated-admin stack (`sam delete --stack-name cerberus` from the delegated admin account profile).
+4. Delete the old management-account forwarder stack (the one created from `cft-eventbridge-rule.yaml`).
+5. Flip the new stack to `Mode=ENFORCE`.
+6. Validate the end-to-end path against another test `CreateAccountAssignment`. Confirm the assignment is actually removed in the IAM Identity Center console — do not rely on the Lambda's reported result alone.
+
+The `DRY_RUN` overlap (steps 1–3) is what makes the cutover safe: both stacks are subscribed to the same event source, but neither modifies state during the overlap window.
 
 ## Testing
-
-### Unit Tests
-
-Run unit tests using the following commands:
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r tests/requirements.txt
-python3 -m unittest discover -v
+AWS_DEFAULT_REGION=<region> python3 -m unittest discover -v
 ```
 
-## Cleanup
+`AWS_DEFAULT_REGION` is required because `app.py` initialises a `boto3.client("sso-admin")` at import time.
 
-To delete the deployed stack, use:
+## Cleanup
 
 ```bash
 sam delete --stack-name "cerberus"
 ```
+
+This removes the Lambda, state machine, EventBridge rule, log group, alarms, SNS topic, and permission boundary policy. CloudTrail data event configuration (if any) is org-level and must be removed separately.
 
 ## CloudWatch MCP Server
 
@@ -142,7 +191,7 @@ The repo includes a pre-configured CloudWatch MCP server (`.mcp.json`) that give
 
 ### AWS Profile Setup
 
-The server expects a local AWS CLI profile named **`cerberus`** with read-only CloudWatch access. Create it using IAM Identity Center or a dedicated IAM user/role:
+The server expects a local AWS CLI profile named **`cerberus`** with read-only CloudWatch access **in the management account** (where this stack is now deployed). Create it using IAM Identity Center or a dedicated IAM user/role:
 
 ```bash
 # Option A — SSO profile (recommended)
@@ -152,11 +201,11 @@ aws configure sso --profile cerberus
 aws configure --profile cerberus
 ```
 
-Attach the AWS managed policy **`arn:aws:iam::aws:policy/CloudWatchLogsReadOnlyAccess`** to whichever principal the profile authenticates as. The MCP server only needs read access; do not grant write or broader permissions.
+Attach the AWS managed policy `arn:aws:iam::aws:policy/CloudWatchLogsReadOnlyAccess` to whichever principal the profile authenticates as. The MCP server only needs read access; do not grant write or broader permissions.
 
 The server targets `ca-central-1` by default (set in `.mcp.json`). If your stack is in a different region, update `AWS_REGION` in `.mcp.json` accordingly.
 
-### What It Gives You
+### What it gives you
 
 Once the profile is configured, Claude Code can query the `/cerberus` log group directly to:
 

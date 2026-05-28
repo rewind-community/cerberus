@@ -38,7 +38,7 @@
       "Type": "Pass",
       "Result": {
         "result": "SKIPPED",
-        "reason": "Target is the Management account; delegated admin cannot modify Management-account assignments."
+        "reason": "Target is the Management account; Cerberus skips it to prevent accidental self-lockout if a regex misfires against the management account's own admin assignments."
       },
       "ResultPath": "$.SkipReason",
       "End": true
@@ -51,7 +51,7 @@
           "And": [
             {
               "Variable": "$.EventName",
-              "StringMatches": "CreateAccountAssignment"
+              "StringEquals": "CreateAccountAssignment"
             },
             {
               "Variable": "$.RequestParameters.permissionSetArn",
@@ -73,6 +73,14 @@
         "PermissionSetArn.$": "$.RequestParameters.permissionSetArn"
       },
       "Resource": "arn:aws:states:::aws-sdk:ssoadmin:describePermissionSet",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "ResultPath": "$.DescribePermissionSet",
       "Next": "Is Permission Set Name Returned?"
     },
@@ -96,6 +104,14 @@
         "InstanceArn.$": "$.RequestParameters.instanceArn"
       },
       "Resource": "arn:aws:states:::aws-sdk:ssoadmin:describeInstance",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "Is Identity Store Id Returned?",
       "ResultPath": "$.DescribeInstance"
     },
@@ -118,13 +134,13 @@
       "Choices": [
         {
           "Variable": "$.RequestParameters.principalType",
-          "StringMatches": "USER",
+          "StringEquals": "USER",
           "Next": "DescribeUser"
         },
         {
           "Next": "DescribeGroup",
           "Variable": "$.RequestParameters.principalType",
-          "StringMatches": "GROUP"
+          "StringEquals": "GROUP"
         }
       ],
       "Default": "Fail Unsupported Principal Type"
@@ -136,6 +152,14 @@
         "UserId.$": "$.RequestParameters.principalId"
       },
       "Resource": "arn:aws:states:::aws-sdk:identitystore:describeUser",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "Is User or Group Name Returned?",
       "ResultPath": "$.DescribeUser"
     },
@@ -146,7 +170,7 @@
           "Next": "Cerberus Lambda Invoke",
           "Or": [
             {
-              "Variable": "$.DescribeUser.DisplayName",
+              "Variable": "$.DescribeUser.UserName",
               "IsPresent": true
             },
             {
@@ -168,6 +192,14 @@
         "GroupId.$": "$.RequestParameters.principalId"
       },
       "Resource": "arn:aws:states:::aws-sdk:identitystore:describeGroup",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "Is User or Group Name Returned?",
       "ResultPath": "$.DescribeGroup"
     },
@@ -176,10 +208,15 @@
       "Resource": "${CerberusFunctionArn}",
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
-          "IntervalSeconds": 15,
-          "MaxAttempts": 5,
-          "BackoffRate": 1.5
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
         }
       ],
       "InputPath": "$",

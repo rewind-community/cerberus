@@ -4,17 +4,6 @@ Description: >
   Cerberus, a state machine that removes AWS Control Tower default permission set associations.
 
 Parameters:
-  EventBusName:
-    Type: String
-    Default: "cerberus-event-bus"
-    Description: "The name of the custom EventBridge event bus for Cerberus"
-
-  ManagementAccountId:
-    Type: String
-    Description: "The Management AWS account ID that will send events to the Cerberus event bus"
-    AllowedPattern: "^[0-9]{12}$"
-    ConstraintDescription: "Must be a valid 12-digit AWS account ID"
-
   LogGroupName:
     Type: String
     Default: "/cerberus"
@@ -71,9 +60,21 @@ Parameters:
 
   NotificationEmail:
     Type: String
-    Description: "Email address to receive notifications when the Cerberus state machine execution fails"
+    Description: "Email address to receive notifications when the Cerberus state machine execution fails or another alarm fires"
     AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
     ConstraintDescription: "Must be a valid email address"
+
+  Mode:
+    Type: String
+    Default: "ENFORCE"
+    AllowedValues:
+      - "ENFORCE"
+      - "DRY_RUN"
+      - "DISABLED"
+    Description: "ENFORCE: actually delete matching assignments. DRY_RUN: log what would be deleted, take no action. DISABLED: turn off the EventBridge rule entirely."
+
+Conditions:
+  IsDisabled: !Equals [!Ref Mode, "DISABLED"]
 
 Resources:
   SfnToCerberusFunctionConnector:
@@ -86,16 +87,52 @@ Resources:
       Permissions:
         - Write
 
+  CerberusPermissionsBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "Permission boundary limiting Cerberus roles to the namespaces required for IAM Identity Center cleanup. Mgmt-account principals are exempt from SCPs; this is the IAM-layer guardrail."
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowedNamespaces
+            Effect: Allow
+            Action:
+              - sso:DeleteAccountAssignment
+              - sso:DescribePermissionSet
+              - sso:DescribeInstance
+              - sso:ListPermissionSets
+              - sso:GetPermissionSet
+              - sso:DescribePermissionSetProvisioningStatus
+              - identitystore:DescribeUser
+              - identitystore:DescribeGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+              - cloudwatch:PutMetricData
+            Resource: "*"
+          # Boundary ceiling on lambda:InvokeFunction is scoped to Lambda functions
+          # in this stack. The actual grant comes from the SAM Serverless::Connector
+          # above, which produces a tightly-scoped policy on CerberusFunction.Arn.
+          # We can't !GetAtt the function ARN here (circular: function uses this boundary),
+          # so we constrain via the StackName-prefixed naming pattern that SAM generates
+          # by default: <StackName>-<LogicalID>-<RandomSuffix>.
+          - Sid: AllowInvokeStackLambdas
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource:
+              - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*"
+
   CerberusStateMachine:
     Type: AWS::Serverless::StateMachine
     DependsOn:
-      - CerberusEventBus
       - CerberusLogGroup
     Properties:
       DefinitionUri: statemachine/cerberus.asl.json
       DefinitionSubstitutions:
         CerberusFunctionArn: !GetAtt CerberusFunction.Arn
-        ManagementAccountId: !Ref ManagementAccountId
+        ManagementAccountId: !Ref AWS::AccountId
+      PermissionsBoundary: !Ref CerberusPermissionsBoundary
       Policies:
         - CloudWatchPutMetricPolicy: {}
         - Statement:
@@ -114,20 +151,7 @@ Resources:
         CerberusEvent:
           Type: EventBridgeRule
           Properties:
-            Pattern:
-              source:
-                - "aws.sso"
-              detail-type:
-                - "AWS API Call via CloudTrail"
-              detail:
-                eventSource:
-                  - "sso.amazonaws.com"
-                eventName:
-                  - "CreateAccountAssignment"
-        CerberusEventManagementAccount:
-          Type: EventBridgeRule
-          Properties:
-            EventBusName: !Ref CerberusEventBus
+            State: !If [IsDisabled, "DISABLED", "ENABLED"]
             Pattern:
               source:
                 - "aws.sso"
@@ -149,11 +173,13 @@ Resources:
         LogGroup: !Ref CerberusLogGroup
         ApplicationLogLevel: INFO
         LogFormat: JSON
+      PermissionsBoundary: !Ref CerberusPermissionsBoundary
       Environment:
         Variables:
           PermissionSetNamePattern: !Ref PermissionSetNamePattern
           PrincipalGroupNamePattern: !Ref PrincipalGroupNamePattern
           PrincipalUserNameEmail: !Ref PrincipalUserNameEmail
+          Mode: !Ref Mode
       Policies:
         - CloudWatchPutMetricPolicy: {}
         - Statement:
@@ -171,23 +197,9 @@ Resources:
             Resource:
               - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroupName}:*"
               - !GetAtt CerberusLogGroup.Arn
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: 2
       MemorySize: 128
       Timeout: 300
-
-  CerberusEventBus:
-    Type: AWS::Events::EventBus
-    Properties:
-      Name: !Ref EventBusName
-      Description: "Event bus for IAM Identity Center events from Management Account (delegated admin)"
-
-  CerberusEventBusPolicy:
-    Type: AWS::Events::EventBusPolicy
-    Properties:
-      StatementId: "CerberusEventBusPolicy"
-      Principal: !Ref ManagementAccountId
-      Action: "events:PutEvents"
-      EventBusName: !Ref CerberusEventBus
 
   CerberusLogGroup:
     Type: AWS::Logs::LogGroup
@@ -206,9 +218,61 @@ Resources:
       Period: 60
       Statistic: Sum
       Threshold: 0
+      TreatMissingData: notBreaching
       Dimensions:
         - Name: StateMachineArn
           Value: !Ref CerberusStateMachine
+      AlarmActions:
+        - !Ref CerberusFailureNotificationTopic
+
+  CerberusFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Cerberus Lambda raised an unhandled error"
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CerberusFunction
+      AlarmActions:
+        - !Ref CerberusFailureNotificationTopic
+
+  CerberusFunctionThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Cerberus Lambda throttled (concurrency cap hit) — investigate event burst or compromise"
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CerberusFunction
+      AlarmActions:
+        - !Ref CerberusFailureNotificationTopic
+
+  CerberusHighDeletionRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Cerberus performed >10 actual deletions in 5 min — possible regex misfire or compromise"
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: Deleted
+      Namespace: Cerberus
+      Period: 300
+      Statistic: Sum
+      Threshold: 10
+      TreatMissingData: notBreaching
       AlarmActions:
         - !Ref CerberusFailureNotificationTopic
 
@@ -220,8 +284,3 @@ Resources:
       Subscription:
         - Endpoint: !Ref NotificationEmail
           Protocol: email
-
-Outputs:
-  EventBusArn:
-    Description: "The ARN of the custom EventBridge event bus for Cerberus"
-    Value: !GetAtt CerberusEventBus.Arn
